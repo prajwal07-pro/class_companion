@@ -1,5 +1,3 @@
-import { seedDatabase } from '@/lib/seed';
-
 import { useState } from 'react';
 import { User, Mail, Hash, Building2, GraduationCap, LogOut, Database } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
@@ -65,21 +63,6 @@ export default function Profile() {
           <Database className="h-4 w-4 mr-2" />
           {seeding ? 'Seeding...' : 'Seed Demo Data'}
         </Button>
-
-<Button 
-  onClick={() => {
-    // Pass the actual logged-in user ID here so attendance/assignments link to you
-    if (userData?.id) {
-        seedDatabase(userData.id)
-            .then(msg => alert(msg))
-            .catch(err => alert("Error: " + err.message));
-    } else {
-        alert("Please log in first!");
-    }
-  }}
->
-  Seed Test Data to Firestore
-</Button>
 
         <Button variant="destructive" className="flex-1" onClick={logout}>
           <LogOut className="h-4 w-4 mr-2" />
