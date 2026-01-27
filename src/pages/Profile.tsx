@@ -60,7 +60,6 @@ export default function Profile() {
       </Card>
       
       <div className="flex gap-4">
-        <Button onClick={seedTimetable}>Fix Timetable Data</Button>
 
         <Button variant="destructive" className="flex-1" onClick={logout}>
           <LogOut className="h-4 w-4 mr-2" />
