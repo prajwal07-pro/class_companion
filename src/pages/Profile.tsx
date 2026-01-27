@@ -6,6 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { useAuth } from '@/contexts/AuthContext';
 import { seedDatabase } from '@/lib/seed';
 import { useToast } from '@/hooks/use-toast';
+import { seedTimetable } from '@/lib/seedTimetable';
 
 export default function Profile() {
   const { userData, logout } = useAuth();
@@ -59,10 +60,7 @@ export default function Profile() {
       </Card>
       
       <div className="flex gap-4">
-        <Button variant="outline" className="flex-1" onClick={handleSeed} disabled={seeding}>
-          <Database className="h-4 w-4 mr-2" />
-          {seeding ? 'Seeding...' : 'Seed Demo Data'}
-        </Button>
+        <Button onClick={seedTimetable}>Fix Timetable Data</Button>
 
         <Button variant="destructive" className="flex-1" onClick={logout}>
           <LogOut className="h-4 w-4 mr-2" />

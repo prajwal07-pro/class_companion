@@ -1,117 +1,218 @@
 import { useState, useEffect } from 'react';
-import { BookOpen, Users, MapPin, Clock, RefreshCw } from 'lucide-react';
+import { BookOpen, Users, MapPin, Clock, CalendarX, Loader2 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { doc, onSnapshot } from 'firebase/firestore'; // Using onSnapshot for real-time status updates
 import { db } from '@/lib/firebase';
+import { useAuth } from '@/contexts/AuthContext';
 
+// Structure matches your Firestore 'slots' array
 interface ClassItem {
   id: string;
   subject: string;
-  teacher: string;
-  room: string;
-  status: 'ON' | 'OFF' | 'SUBSTITUTE';
-  substituteTeacher?: string;
-  timeSlot: string;
-  dayOfWeek: string;
+  teacherName: string;
+  time: string;
+  isActive: boolean; // Field from your database
+  room?: string;     // Optional fallback
 }
 
-const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-const currentDay = days[new Date().getDay() - 1] || 'Monday';
+const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 function ClassCard({ classItem }: { classItem: ClassItem }) {
+  // Logic: isActive = true (Green/ON), isActive = false (Red/Cancelled)
+  const isCancelled = !classItem.isActive;
+
   const statusConfig = {
-    ON: { label: 'Ongoing', variant: 'default' as const, bg: 'bg-primary/10 border-primary/20' },
-    OFF: { label: 'Cancelled', variant: 'destructive' as const, bg: 'bg-destructive/10 border-destructive/20' },
-    SUBSTITUTE: { label: 'Substitute', variant: 'secondary' as const, bg: 'bg-yellow-500/10 border-yellow-500/20' },
+    ON: { 
+      label: 'Scheduled', 
+      variant: 'default' as const, 
+      bg: 'bg-primary/10 border-primary/20',
+      text: 'text-primary'
+    },
+    OFF: { 
+      label: 'Cancelled', 
+      variant: 'destructive' as const, 
+      bg: 'bg-destructive/10 border-destructive/20',
+      text: 'text-destructive'
+    },
   };
 
-  const status = statusConfig[classItem.status] || statusConfig.ON;
+  const status = isCancelled ? statusConfig.OFF : statusConfig.ON;
+
+  // Formatting time for display (e.g. "09:00" -> "09:00 - 10:00")
+  const [h, m] = classItem.time.split(':');
+  const endTime = h ? `${parseInt(h) + 1}:${m || '00'}` : '';
+  const timeDisplay = `${classItem.time} - ${endTime}`;
 
   return (
-    <Card className={`${status.bg} border`}>
+    <Card className={`${status.bg} border transition-all hover:shadow-md`}>
       <CardContent className="pt-4">
         <div className="flex items-start justify-between mb-3">
           <div>
-            <h3 className="font-semibold text-foreground">{classItem.subject}</h3>
+            <h3 className={`font-semibold text-lg ${isCancelled ? 'text-muted-foreground line-through decoration-destructive' : 'text-foreground'}`}>
+              {classItem.subject}
+            </h3>
             <div className="flex items-center gap-1 mt-1 text-sm text-muted-foreground">
               <Users className="h-3 w-3" />
-              <span>{classItem.teacher}</span>
+              <span>{classItem.teacherName}</span>
             </div>
           </div>
-          <Badge variant={status.variant}>{status.label}</Badge>
+          <Badge variant={status.variant} className="ml-2">
+            {status.label}
+          </Badge>
         </div>
-        <div className="flex items-center gap-4 text-sm text-muted-foreground">
+        
+        <div className="flex items-center gap-4 text-sm text-muted-foreground mt-4">
           <div className="flex items-center gap-1">
+             {/* Default room to 'Classroom' since it's not in your slots array yet */}
             <MapPin className="h-3 w-3" />
-            <span>Room {classItem.room}</span>
+            <span>{classItem.room || 'Classroom'}</span>
           </div>
           <div className="flex items-center gap-1">
             <Clock className="h-3 w-3" />
-            <span>{classItem.timeSlot}</span>
+            <span>{timeDisplay}</span>
           </div>
         </div>
-        {classItem.status === 'SUBSTITUTE' && classItem.substituteTeacher && (
-          <div className="mt-2 p-2 bg-background/50 rounded-md">
-            <p className="text-xs text-muted-foreground"><span className="font-medium">Substitute:</span> {classItem.substituteTeacher}</p>
-          </div>
-        )}
       </CardContent>
     </Card>
   );
 }
 
 export default function Classes() {
-  const [selectedDay, setSelectedDay] = useState(currentDay);
+  const { userData } = useAuth();
   const [classes, setClasses] = useState<ClassItem[]>([]);
   const [loading, setLoading] = useState(true);
+  
+  // Get Today's Day Name
+  const today = days[new Date().getDay()];
 
   useEffect(() => {
-    const q = query(collection(db, 'classes'), where('dayOfWeek', '==', selectedDay));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetchedClasses = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ClassItem));
-      setClasses(fetchedClasses);
+    // Need Department and Semester to build the Document ID
+    if (!userData?.department || !userData?.semester) {
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+
+    // --- 1. FORMAT SEMESTER ---
+    // Handle "2" vs "Sem 2" vs "Semester 2"
+    let semString = userData.semester.toString();
+    if (semString.toLowerCase().includes('semester')) {
+      semString = semString.replace(/semester/i, 'Sem').trim();
+    } else if (!semString.toLowerCase().startsWith('sem')) {
+      semString = `Sem ${semString}`;
+    }
+
+    // --- 2. CONSTRUCT DOCUMENT ID ---
+    // Format: "Mechanical Engineering_Sem 2_Tuesday"
+    const docId = `${userData.department}_${semString}_${today}`;
+    console.log("Listening to Live Classes:", docId);
+
+    // --- 3. LISTEN TO LIVE DATA ---
+    // We use onSnapshot instead of getDoc so status changes (isActive) reflect instantly
+    const unsubscribe = onSnapshot(doc(db, 'timetables', docId), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        const rawSlots = (data.slots || []) as any[];
+
+        const mappedClasses = rawSlots.map((slot, index) => ({
+          id: `${docId}_${index}`,
+          subject: slot.subject || 'Unknown Subject',
+          teacherName: slot.teacherName || 'Unknown',
+          time: slot.time || '00:00',
+          isActive: slot.isActive !== false, // Default to true if missing, explicitly false if cancelled
+          room: slot.room || 'TBA'
+        }));
+
+        // Sort by time
+        mappedClasses.sort((a, b) => a.time.localeCompare(b.time));
+        setClasses(mappedClasses);
+      } else {
+        setClasses([]); // No classes for today
+      }
+      setLoading(false);
+    }, (error) => {
+      console.error("Error fetching live classes:", error);
       setLoading(false);
     });
-    return () => unsubscribe();
-  }, [selectedDay]);
 
+    // Cleanup listener on unmount
+    return () => unsubscribe();
+
+  }, [userData?.department, userData?.semester, today]);
+
+  // Statistics for the dashboard cards
   const stats = {
     total: classes.length,
-    ongoing: classes.filter(c => c.status === 'ON').length,
-    cancelled: classes.filter(c => c.status === 'OFF').length,
-    substitute: classes.filter(c => c.status === 'SUBSTITUTE').length,
+    ongoing: classes.filter(c => c.isActive).length,
+    cancelled: classes.filter(c => !c.isActive).length,
   };
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <div><h1 className="text-2xl font-bold text-foreground">Live Class Status</h1><p className="text-muted-foreground">Check if your classes are on before heading out</p></div>
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">Live Class Status</h1>
+          <p className="text-muted-foreground">
+            {today}'s Schedule for {userData?.department}
+          </p>
+        </div>
+        <Badge variant="outline" className="px-3 py-1 text-sm bg-background">
+          {today}
+        </Badge>
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card><CardContent className="pt-4"><div className="text-2xl font-bold text-foreground">{stats.total}</div><p className="text-sm text-muted-foreground">Total Classes</p></CardContent></Card>
-        <Card className="border-primary/20 bg-primary/5"><CardContent className="pt-4"><div className="text-2xl font-bold text-primary">{stats.ongoing}</div><p className="text-sm text-muted-foreground">Ongoing</p></CardContent></Card>
-        <Card className="border-destructive/20 bg-destructive/5"><CardContent className="pt-4"><div className="text-2xl font-bold text-destructive">{stats.cancelled}</div><p className="text-sm text-muted-foreground">Cancelled</p></CardContent></Card>
-        <Card className="border-yellow-500/20 bg-yellow-500/5"><CardContent className="pt-4"><div className="text-2xl font-bold text-yellow-600">{stats.substitute}</div><p className="text-sm text-muted-foreground">Substitute</p></CardContent></Card>
+
+      {/* Summary Cards */}
+      <div className="grid grid-cols-3 gap-4">
+        <Card>
+          <CardContent className="pt-4">
+            <div className="text-2xl font-bold text-foreground">{stats.total}</div>
+            <p className="text-sm text-muted-foreground">Total Classes</p>
+          </CardContent>
+        </Card>
+        <Card className="border-primary/20 bg-primary/5">
+          <CardContent className="pt-4">
+            <div className="text-2xl font-bold text-primary">{stats.ongoing}</div>
+            <p className="text-sm text-muted-foreground">Scheduled</p>
+          </CardContent>
+        </Card>
+        <Card className="border-destructive/20 bg-destructive/5">
+          <CardContent className="pt-4">
+            <div className="text-2xl font-bold text-destructive">{stats.cancelled}</div>
+            <p className="text-sm text-muted-foreground">Cancelled</p>
+          </CardContent>
+        </Card>
       </div>
-      <Tabs value={selectedDay} onValueChange={setSelectedDay}>
-        <TabsList className="w-full justify-start overflow-x-auto">
-          {days.map((day) => (
-            <TabsTrigger key={day} value={day} className="min-w-[80px]">{day.slice(0, 3)}{day === currentDay && <span className="ml-1 text-xs">(Today)</span>}</TabsTrigger>
-          ))}
-        </TabsList>
-        <TabsContent value={selectedDay} className="mt-4">
-          {loading ? <div className="text-center py-8">Loading classes...</div> : classes.length > 0 ? (
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {classes.map((classItem) => <ClassCard key={classItem.id} classItem={classItem} />)}
-            </div>
-          ) : (
-            <Card><CardContent className="py-8 text-center"><BookOpen className="h-12 w-12 mx-auto text-muted-foreground mb-3" /><p className="text-muted-foreground">No classes scheduled for {selectedDay}</p></CardContent></Card>
-          )}
-        </TabsContent>
-      </Tabs>
+
+      {/* Class List */}
+      <div className="mt-4">
+        {loading ? (
+          <div className="flex justify-center py-12">
+            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+          </div>
+        ) : classes.length > 0 ? (
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {classes.map((classItem) => (
+              <ClassCard key={classItem.id} classItem={classItem} />
+            ))}
+          </div>
+        ) : (
+          <Card>
+            <CardContent className="py-12 text-center flex flex-col items-center justify-center">
+              <CalendarX className="h-12 w-12 mx-auto text-muted-foreground mb-3 opacity-20" />
+              <h3 className="text-lg font-medium">No classes today</h3>
+              <p className="text-muted-foreground">Enjoy your free time!</p>
+              
+              {(!userData?.department) && (
+                <p className="text-xs text-yellow-600 mt-2 bg-yellow-50 px-2 py-1 rounded">
+                  (Check if your Department/Semester is set in Profile)
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        )}
+      </div>
     </div>
   );
 }

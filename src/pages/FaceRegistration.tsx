@@ -1,126 +1,89 @@
-import { useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { GraduationCap, ArrowLeft, CheckCircle2 } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import * as faceapi from 'face-api.js';
+import { Camera, CheckCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { FaceCapture } from '@/components/auth/FaceCapture';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 
 export default function FaceRegistration() {
-  const [isComplete, setIsComplete] = useState(false);
+  const { state } = useLocation();
+  const { createUserProfile } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
-  const { firebaseUser, createUserProfile, setFaceVerified } = useAuth();
   const { toast } = useToast();
+  const videoRef = useRef<HTMLVideoElement>(null);
+  
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [scanning, setScanning] = useState(false);
 
-  const stateData = location.state as { userId?: string; userData?: any } | null;
-  const userId = stateData?.userId || firebaseUser?.uid;
-  const userData = stateData?.userData;
-
-  const handleFaceCapture = async (descriptor: Float32Array, photoDataUrl: string) => {
-    if (!userId) {
-      toast({
-        title: 'Error',
-        description: 'User session not found. Please sign up again.',
-        variant: 'destructive',
-      });
+  // If no state (user tried to access directly), go back to auth
+  useEffect(() => {
+    if (!state?.userId || !state?.userData) {
       navigate('/auth');
-      return;
     }
+  }, [state, navigate]);
 
-    try {
-      // Create user profile with face data
-      await createUserProfile(userId, {
-        ...userData,
-        email: userData?.email || firebaseUser?.email || '',
-        faceDescriptor: Array.from(descriptor),
-        profilePhoto: photoDataUrl,
-      });
+  useEffect(() => {
+    const loadModels = async () => {
+      const MODEL_URL = '/models';
+      await Promise.all([
+        faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+      ]);
+      setModelsLoaded(true);
+      startVideo();
+    };
+    loadModels();
+  }, []);
 
-      setIsComplete(true);
-      setFaceVerified(true);
-      
-      toast({
-        title: 'Registration complete!',
-        description: 'Your face has been registered successfully.',
-      });
-
-      // Navigate to dashboard after short delay
-      setTimeout(() => {
-        navigate('/');
-      }, 2000);
-    } catch (error: any) {
-      console.error('Face registration error:', error);
-      toast({
-        title: 'Registration failed',
-        description: error.message || 'Please try again',
-        variant: 'destructive',
-      });
-    }
+  const startVideo = () => {
+    navigator.mediaDevices.getUserMedia({ video: {} })
+      .then(stream => { if (videoRef.current) videoRef.current.srcObject = stream; });
   };
 
-  if (isComplete) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background p-4">
-        <Card className="w-full max-w-md">
-          <CardContent className="pt-6">
-            <div className="text-center space-y-4">
-              <div className="flex justify-center">
-                <div className="h-20 w-20 rounded-full bg-primary/10 flex items-center justify-center">
-                  <CheckCircle2 className="h-10 w-10 text-primary" />
-                </div>
-              </div>
-              <h2 className="text-2xl font-bold text-foreground">All Set!</h2>
-              <p className="text-muted-foreground">
-                Your account is ready. Redirecting to dashboard...
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+  const handleCapture = async () => {
+    if (!videoRef.current) return;
+    setScanning(true);
+    
+    const detection = await faceapi.detectSingleFace(videoRef.current)
+      .withFaceLandmarks()
+      .withFaceDescriptor();
+
+    if (detection) {
+      // Create full profile with face data
+      const descriptorArray = Array.from(detection.descriptor);
+      
+      await createUserProfile(state.userId, {
+        ...state.userData,
+        faceDescriptor: descriptorArray
+      });
+
+      toast({ title: "Registration Complete!", description: "Your face ID is set up." });
+      navigate('/');
+    } else {
+      toast({ title: "No Face Detected", variant: "destructive" });
+    }
+    setScanning(false);
+  };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
-      <div className="w-full max-w-md space-y-6">
-        {/* Header */}
-        <div className="text-center">
-          <div className="inline-flex items-center justify-center h-16 w-16 rounded-2xl bg-primary mb-4">
-            <GraduationCap className="h-10 w-10 text-primary-foreground" />
+    <div className="min-h-screen flex items-center justify-center p-4">
+      <Card className="w-full max-w-md">
+        <CardHeader>
+          <CardTitle>Setup Face ID</CardTitle>
+          <CardDescription>One last step to secure your account</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="rounded-lg overflow-hidden border bg-black aspect-video">
+            <video ref={videoRef} autoPlay muted className="w-full h-full object-cover" />
           </div>
-          <h1 className="text-2xl font-bold text-foreground">Almost There!</h1>
-          <p className="text-muted-foreground mt-1">
-            Register your face for secure login
-          </p>
-        </div>
-
-        {/* Face Capture */}
-        <FaceCapture onCapture={handleFaceCapture} isRegistration />
-
-        {/* Info */}
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm">Why Face ID?</CardTitle>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground space-y-2">
-            <p>• Secure, password-less verification</p>
-            <p>• Only you can access your account</p>
-            <p>• Required for every login</p>
-            <p>• Your data is encrypted and stored securely</p>
-          </CardContent>
-        </Card>
-
-        <Button
-          variant="ghost"
-          className="w-full"
-          onClick={() => navigate('/auth')}
-        >
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to Login
-        </Button>
-      </div>
+          <Button onClick={handleCapture} disabled={!modelsLoaded || scanning} className="w-full">
+            {scanning ? "Processing..." : "Capture & Finish"}
+          </Button>
+        </CardContent>
+      </Card>
     </div>
   );
 }

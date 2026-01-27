@@ -1,14 +1,16 @@
 import { useState, useEffect } from 'react';
-import { ClipboardList, Calendar, Upload, Download, Clock, CheckCircle2, AlertCircle } from 'lucide-react';
+import { 
+  ClipboardList, Calendar, CheckCircle2, Clock, ArrowRight, Loader2
+} from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { 
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription, DialogFooter, DialogClose 
+} from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
-import { collection, query, onSnapshot, doc, updateDoc, Timestamp, where } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, addDoc, Timestamp } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -17,61 +19,88 @@ interface Assignment {
   title: string;
   subject: string;
   description: string;
-  dueDate: Timestamp;
-  attachments: string[];
-  status: 'pending' | 'submitted' | 'overdue';
-  submittedAt?: Timestamp;
-  userId: string;
-}
-
-function getDaysRemaining(dueDate: Timestamp): string {
-  const now = new Date();
-  const date = dueDate.toDate();
-  const diff = date.getTime() - now.getTime();
-  const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
-  if (days < 0) return `${Math.abs(days)} days overdue`;
-  if (days === 0) return 'Due today';
-  if (days === 1) return 'Due tomorrow';
-  return `${days} days left`;
+  department: string;
+  semester: string;
+  teacherName: string;
+  dueDate: string;
+  createdAt: Timestamp;
+  status?: 'pending' | 'submitted'; // Derived status
 }
 
 function AssignmentCard({ assignment, onSubmit }: { assignment: Assignment; onSubmit: (id: string) => void }) {
-  const { toast } = useToast();
-  const daysText = getDaysRemaining(assignment.dueDate);
-  const isUrgent = assignment.status === 'pending' && assignment.dueDate.toDate().getTime() - Date.now() < 3 * 24 * 60 * 60 * 1000;
-  const statusConfig = {
-    pending: { label: 'Pending', variant: 'secondary' as const, icon: Clock },
-    submitted: { label: 'Submitted', variant: 'default' as const, icon: CheckCircle2 },
-    overdue: { label: 'Overdue', variant: 'destructive' as const, icon: AlertCircle },
-  };
-  const config = statusConfig[assignment.status] || statusConfig.pending;
-  const StatusIcon = config.icon;
+  const dueDateObj = new Date(assignment.dueDate);
+  const now = new Date();
+  const timeDiff = dueDateObj.getTime() - now.getTime();
+  const daysLeft = Math.ceil(timeDiff / (1000 * 3600 * 24));
+  
+  const isOverdue = daysLeft < 0;
+  const isUrgent = !isOverdue && daysLeft <= 2;
+  const isSubmitted = assignment.status === 'submitted';
 
   return (
-    <Card className={isUrgent ? 'border-destructive/50' : ''}>
-      <CardContent className="pt-4">
-        <div className="flex items-start justify-between mb-3">
-          <div className="flex-1">
-            <div className="flex items-center gap-2 mb-1"><Badge variant="outline">{assignment.subject}</Badge>{isUrgent && <Badge variant="destructive">Urgent</Badge>}</div>
-            <h3 className="font-semibold text-foreground">{assignment.title}</h3>
-            <p className="text-sm text-muted-foreground mt-1 line-clamp-2">{assignment.description}</p>
+    <Card className={`transition-all ${isUrgent && !isSubmitted ? 'border-orange-500/50 bg-orange-500/5' : 'hover:shadow-md'}`}>
+      <CardContent className="pt-6">
+        <div className="flex items-start justify-between mb-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="bg-background">{assignment.subject}</Badge>
+              {isUrgent && !isSubmitted && <Badge className="bg-orange-500 hover:bg-orange-600 border-transparent text-white">Due Soon</Badge>}
+              {isOverdue && !isSubmitted && <Badge variant="destructive">Overdue</Badge>}
+            </div>
+            <h3 className="font-bold text-lg text-foreground">{assignment.title}</h3>
+            <p className="text-xs text-muted-foreground">By {assignment.teacherName}</p>
           </div>
-          <Badge variant={config.variant} className="ml-4"><StatusIcon className="h-3 w-3 mr-1" />{config.label}</Badge>
+          
+          <Badge variant={isSubmitted ? 'default' : 'secondary'} className="flex items-center gap-1">
+            {isSubmitted ? <CheckCircle2 className="h-3 w-3" /> : <Clock className="h-3 w-3" />}
+            {isSubmitted ? 'Completed' : 'Pending'}
+          </Badge>
         </div>
-        <div className="flex items-center gap-4 text-sm text-muted-foreground mb-4">
-          <div className="flex items-center gap-1"><Calendar className="h-3 w-3" /><span>{assignment.dueDate.toDate().toLocaleDateString()}</span></div>
-          <div className={`flex items-center gap-1 ${assignment.status === 'overdue' ? 'text-destructive' : ''}`}><Clock className="h-3 w-3" /><span>{daysText}</span></div>
-        </div>
-        <div className="flex items-center justify-between">
-          <div className="flex gap-2">
-            {assignment.attachments?.map((file, index) => (
-              <Button key={index} variant="outline" size="sm" onClick={() => toast({ title: 'Downloading...', description: file })}><Download className="h-3 w-3 mr-1" />{file.length > 15 ? file.slice(0, 12) + '...' : file}</Button>
-            ))}
+
+        <p className="text-sm text-muted-foreground mb-4 line-clamp-2">
+          {assignment.description}
+        </p>
+
+        <div className="flex items-center justify-between pt-4 border-t">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Calendar className="h-4 w-4" />
+            <span className={isOverdue && !isSubmitted ? "text-destructive font-medium" : ""}>
+              {dueDateObj.toLocaleDateString()} 
+              <span className="text-xs ml-1 opacity-70">
+                ({daysLeft < 0 ? `${Math.abs(daysLeft)} days ago` : daysLeft === 0 ? "Today" : `${daysLeft} days left`})
+              </span>
+            </span>
           </div>
-          {assignment.status === 'pending' && (
+
+          {!isSubmitted && (
             <Dialog>
-              <DialogTrigger asChild><Button size="sm"><Upload className="h-3 w-3 mr-1" />Submit</Button></DialogTrigger>
-              <DialogContent><DialogHeader><DialogTitle>Submit Assignment</DialogTitle><DialogDescription>{assignment.title}</DialogDescription></DialogHeader><div className="space-y-4 py-4"><div><Label htmlFor="file">Upload your work</Label><Input id="file" type="file" className="mt-2" /></div><Button className="w-full" onClick={() => onSubmit(assignment.id)}><Upload className="h-4 w-4 mr-2" />Submit Assignment</Button></div></DialogContent>
+              <DialogTrigger asChild>
+                <Button size="sm">
+                  Mark as Done <ArrowRight className="h-4 w-4 ml-2" />
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Confirm Submission</DialogTitle>
+                  <DialogDescription>
+                    Are you sure you want to mark <strong>{assignment.title}</strong> as completed?
+                  </DialogDescription>
+                </DialogHeader>
+                
+                {/* No File Input here, just confirmation */}
+                <div className="py-4 text-sm text-muted-foreground bg-muted/30 p-3 rounded-md">
+                   <p>This will move the assignment to your "Completed" tab.</p>
+                </div>
+
+                <DialogFooter>
+                  <DialogClose asChild>
+                    <Button variant="outline">Cancel</Button>
+                  </DialogClose>
+                  <Button onClick={() => onSubmit(assignment.id)}>
+                    Yes, Submit
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
             </Dialog>
           )}
         </div>
@@ -84,43 +113,146 @@ export default function Assignments() {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const { toast } = useToast();
   const { userData } = useAuth();
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if(!userData?.id) return;
-    const q = query(collection(db, 'assignments'), where('userId', '==', userData.id));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setAssignments(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Assignment)));
-    });
-    return () => unsubscribe();
-  }, [userData]);
+    if (!userData?.department || !userData?.semester || !userData?.id) {
+      setLoading(false);
+      return;
+    }
 
-  const handleSubmit = async (id: string) => {
+    setLoading(true);
+
+    // Format semester (e.g. "2" -> "Sem 2")
+    let semString = userData.semester.toString();
+    if (!semString.toLowerCase().startsWith('sem')) {
+      semString = `Sem ${semString}`;
+    }
+
+    // 1. Fetch Assignments
+    const assignmentsQuery = query(
+      collection(db, 'assignments'),
+      where('department', '==', userData.department),
+      where('semester', '==', semString)
+    );
+
+    // 2. Fetch User's Submissions (to know what is completed)
+    const submissionsQuery = query(
+      collection(db, 'submissions'),
+      where('userId', '==', userData.id)
+    );
+
+    // Listen to Assignments
+    const unsubAssignments = onSnapshot(assignmentsQuery, (assSnap) => {
+      const fetchedAssignments = assSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Assignment));
+      
+      // Listen to Submissions
+      const unsubSubmissions = onSnapshot(submissionsQuery, (subSnap) => {
+        const submittedIds = new Set(subSnap.docs.map(doc => doc.data().assignmentId));
+        
+        // Merge data: Set status based on submission existence
+        const mergedData = fetchedAssignments.map(a => ({
+          ...a,
+          status: submittedIds.has(a.id) ? 'submitted' : 'pending'
+        }));
+
+        // Sort: Pending first, then by Due Date
+        mergedData.sort((a, b) => {
+          if (a.status !== b.status) return a.status === 'pending' ? -1 : 1;
+          return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime();
+        });
+
+        setAssignments(mergedData as Assignment[]);
+        setLoading(false);
+      });
+
+      return () => unsubSubmissions();
+    });
+
+    return () => unsubAssignments();
+  }, [userData?.department, userData?.semester, userData?.id]);
+
+  const handleSubmit = async (assignmentId: string) => {
+    if (!userData?.id) return;
+
     try {
-      await updateDoc(doc(db, 'assignments', id), { status: 'submitted', submittedAt: Timestamp.now() });
-      toast({ title: 'Assignment submitted!', description: 'Your work has been uploaded successfully.' });
+      // Create a record in 'submissions' collection
+      await addDoc(collection(db, 'submissions'), {
+        assignmentId: assignmentId,
+        userId: userData.id,
+        submittedAt: Timestamp.now(),
+        studentName: userData.name || 'Unknown'
+      });
+
+      toast({ title: 'Submitted', description: 'Assignment moved to Completed.' });
     } catch (e) {
-      toast({ title: 'Error', description: 'Failed to submit assignment', variant: 'destructive' });
+      console.error(e);
+      toast({ title: 'Error', description: 'Could not mark as done.', variant: 'destructive' });
     }
   };
 
-  const pending = assignments.filter(a => a.status === 'pending');
+  if (loading) {
+    return (
+      <div className="flex justify-center items-center h-[50vh]">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  const pending = assignments.filter(a => a.status !== 'submitted');
   const submitted = assignments.filter(a => a.status === 'submitted');
-  const overdue = assignments.filter(a => a.status === 'overdue');
 
   return (
     <div className="space-y-6">
-      <div><h1 className="text-2xl font-bold text-foreground">Assignment Hub</h1><p className="text-muted-foreground">View and submit your assignments</p></div>
-      <div className="grid grid-cols-3 gap-4">
-        <Card><CardContent className="pt-4 text-center"><Clock className="h-6 w-6 mx-auto mb-2 text-muted-foreground" /><div className="text-2xl font-bold">{pending.length}</div><p className="text-xs text-muted-foreground">Pending</p></CardContent></Card>
-        <Card className="border-primary/20 bg-primary/5"><CardContent className="pt-4 text-center"><CheckCircle2 className="h-6 w-6 mx-auto mb-2 text-primary" /><div className="text-2xl font-bold text-primary">{submitted.length}</div><p className="text-xs text-muted-foreground">Submitted</p></CardContent></Card>
-        <Card className="border-destructive/20 bg-destructive/5"><CardContent className="pt-4 text-center"><AlertCircle className="h-6 w-6 mx-auto mb-2 text-destructive" /><div className="text-2xl font-bold text-destructive">{overdue.length}</div><p className="text-xs text-muted-foreground">Overdue</p></CardContent></Card>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">My Assignments</h1>
+          <p className="text-muted-foreground">
+            {userData?.department ? `Tasks for ${userData.department} (${userData.semester})` : 'Your pending work'}
+          </p>
+        </div>
       </div>
-      <Tabs defaultValue="all">
-        <TabsList><TabsTrigger value="all">All</TabsTrigger><TabsTrigger value="pending">Pending</TabsTrigger><TabsTrigger value="submitted">Submitted</TabsTrigger><TabsTrigger value="overdue">Overdue</TabsTrigger></TabsList>
-        <TabsContent value="all" className="mt-4 space-y-4">{assignments.map(a => <AssignmentCard key={a.id} assignment={a} onSubmit={handleSubmit} />)}</TabsContent>
-        <TabsContent value="pending" className="mt-4 space-y-4">{pending.map(a => <AssignmentCard key={a.id} assignment={a} onSubmit={handleSubmit} />)}</TabsContent>
-        <TabsContent value="submitted" className="mt-4 space-y-4">{submitted.map(a => <AssignmentCard key={a.id} assignment={a} onSubmit={handleSubmit} />)}</TabsContent>
-        <TabsContent value="overdue" className="mt-4 space-y-4">{overdue.map(a => <AssignmentCard key={a.id} assignment={a} onSubmit={handleSubmit} />)}</TabsContent>
+
+      <div className="grid grid-cols-2 gap-4">
+        <Card className="bg-primary/5 border-primary/20">
+          <CardContent className="pt-6 flex flex-col items-center justify-center text-center">
+            <span className="text-4xl font-bold text-primary">{pending.length}</span>
+            <span className="text-sm text-muted-foreground">To Do</span>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6 flex flex-col items-center justify-center text-center">
+            <span className="text-4xl font-bold text-green-600">{submitted.length}</span>
+            <span className="text-sm text-muted-foreground">Completed</span>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Tabs defaultValue="pending" className="w-full">
+        <TabsList className="grid w-full grid-cols-2">
+          <TabsTrigger value="pending">To Do ({pending.length})</TabsTrigger>
+          <TabsTrigger value="submitted">Completed ({submitted.length})</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="pending" className="mt-4 space-y-4">
+          {pending.length > 0 ? (
+            pending.map(a => <AssignmentCard key={a.id} assignment={a} onSubmit={handleSubmit} />)
+          ) : (
+            <div className="text-center py-12 bg-muted/30 rounded-lg border border-dashed">
+              <ClipboardList className="mx-auto h-12 w-12 text-muted-foreground/50" />
+              <h3 className="mt-4 text-lg font-medium">All caught up!</h3>
+              <p className="text-muted-foreground">No pending assignments.</p>
+            </div>
+          )}
+        </TabsContent>
+        
+        <TabsContent value="submitted" className="mt-4 space-y-4">
+          {submitted.length > 0 ? (
+             submitted.map(a => <AssignmentCard key={a.id} assignment={a} onSubmit={() => {}} />)
+          ) : (
+             <div className="text-center py-12 text-muted-foreground">No completed assignments yet.</div>
+          )}
+        </TabsContent>
       </Tabs>
     </div>
   );

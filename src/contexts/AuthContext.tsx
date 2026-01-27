@@ -1,135 +1,162 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
-import { User as FirebaseUser, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc, Timestamp } from 'firebase/firestore';
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import { 
+  User as FirebaseUser,
+  onAuthStateChanged, 
+  createUserWithEmailAndPassword, // Import this
+  signOut as firebaseSignOut
+} from 'firebase/auth';
+import { 
+  doc, 
+  getDoc, 
+  setDoc, // Import this
+  collection, 
+  getDocs,
+  Timestamp 
+} from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
-import { User } from '@/types';
-import { isFaceMatch } from '@/lib/faceApi';
+import * as faceapi from 'face-api.js';
 
-interface AuthContextType {
-  firebaseUser: FirebaseUser | null;
-  userData: User | null;
-  loading: boolean;
-  isFullyAuthenticated: boolean;
-  login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
-  signup: (email: string, password: string) => Promise<{ success: boolean; userId?: string; error?: string }>;
-  logout: () => Promise<void>;
-  verifyFace: (capturedDescriptor: Float32Array) => Promise<boolean>;
-  setFaceVerified: (verified: boolean) => void;
-  createUserProfile: (userId: string, data: Partial<User>) => Promise<void>;
+interface UserData {
+  id: string;
+  name: string;
+  email: string;
+  role: 'student' | 'teacher' | 'admin';
+  studentId?: string;
+  department?: string;
+  faceDescriptor?: number[]; 
+  profilePhoto?: string;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+interface AuthContextType {
+  currentUser: FirebaseUser | null;
+  userData: UserData | null;
+  loading: boolean;
+  isFullyAuthenticated: boolean;
+  // Login with Face (1:N Search)
+  loginWithFace: (descriptor: Float32Array) => Promise<boolean>;
+  // Standard Register
+  signup: (email: string, password: string) => Promise<{ success: boolean; userId?: string; error?: string }>;
+  // Save Profile (used after signup)
+  createUserProfile: (userId: string, data: Partial<UserData>) => Promise<void>;
+  logout: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthContextType | null>(null);
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
+  if (!context) throw new Error('useAuth must be used within an AuthProvider');
   return context;
 };
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
-  const [userData, setUserData] = useState<User | null>(null);
+export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
+  const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
+  const [userData, setUserData] = useState<UserData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [faceVerified, setFaceVerified] = useState(false);
 
-  const isFullyAuthenticated = !!firebaseUser && !!userData && faceVerified;
-
+  // 1. Listen for Firebase Auth state
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setFirebaseUser(user);
-      
+      setCurrentUser(user);
       if (user) {
-        // Fetch user data from Firestore
-        const userDoc = await getDoc(doc(db, 'users', user.uid));
-        if (userDoc.exists()) {
-          setUserData({ id: userDoc.id, ...userDoc.data() } as User);
-        } else {
-          setUserData(null);
+        const docRef = doc(db, 'users', user.uid);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          setUserData({ id: docSnap.id, ...docSnap.data() } as UserData);
         }
       } else {
         setUserData(null);
-        setFaceVerified(false);
       }
-      
       setLoading(false);
     });
-
-    return () => unsubscribe();
+    return unsubscribe;
   }, []);
 
-  const login = async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
+  // 2. REGISTER FUNCTION (Fixes the hang)
+  const signup = async (email: string, password: string) => {
     try {
-      await signInWithEmailAndPassword(auth, email, password);
-      return { success: true };
+      const result = await createUserWithEmailAndPassword(auth, email, password);
+      // We do NOT create the profile yet. The UI will do that after Face Registration.
+      return { success: true, userId: result.user.uid };
     } catch (error: any) {
-      console.error('Login error:', error);
-      return { success: false, error: error.message || 'Failed to login' };
+      console.error("Signup error:", error);
+      return { success: false, error: error.message };
     }
   };
 
-  const signup = async (email: string, password: string): Promise<{ success: boolean; userId?: string; error?: string }> => {
+  // 3. CREATE PROFILE (Used after Signup + Face Capture)
+  const createUserProfile = async (userId: string, data: Partial<UserData>) => {
     try {
-      const result = await createUserWithEmailAndPassword(auth, email, password);
-      return { success: true, userId: result.user.uid };
-    } catch (error: any) {
-      console.error('Signup error:', error);
-      return { success: false, error: error.message || 'Failed to create account' };
+      await setDoc(doc(db, 'users', userId), {
+        ...data,
+        id: userId,
+        createdAt: Timestamp.now(),
+        role: 'student' // Default role
+      });
+      // Force refresh user data
+      const docSnap = await getDoc(doc(db, 'users', userId));
+      if (docSnap.exists()) {
+        setUserData({ id: docSnap.id, ...docSnap.data() } as UserData);
+      }
+    } catch (error) {
+      console.error("Error creating profile:", error);
+      throw error;
+    }
+  };
+
+  // 4. FACE LOGIN (Search all users)
+  const loginWithFace = async (descriptor: Float32Array): Promise<boolean> => {
+    try {
+      console.log("Searching for face match...");
+      const usersRef = collection(db, 'users');
+      const snapshot = await getDocs(usersRef);
+      
+      let bestMatch: UserData | null = null;
+      let lowestDistance = 1.0; 
+
+      snapshot.forEach(doc => {
+        const user = { id: doc.id, ...doc.data() } as UserData;
+        if (user.faceDescriptor) {
+          const storedDescriptor = new Float32Array(user.faceDescriptor);
+          const distance = faceapi.euclideanDistance(descriptor, storedDescriptor);
+          // Threshold 0.5 is a good balance
+          if (distance < 0.5 && distance < lowestDistance) {
+            lowestDistance = distance;
+            bestMatch = user;
+          }
+        }
+      });
+
+      if (bestMatch) {
+        setUserData(bestMatch);
+        // Note: We don't technically sign them in to Firebase Auth here because 
+        // we might not have their password. We just set 'userData' which grants access.
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error("Face login error:", error);
+      return false;
     }
   };
 
   const logout = async () => {
-    try {
-      await signOut(auth);
-      setFaceVerified(false);
-      setUserData(null);
-    } catch (error) {
-      console.error('Logout error:', error);
-    }
-  };
-
-  const verifyFace = async (capturedDescriptor: Float32Array): Promise<boolean> => {
-    if (!userData?.faceDescriptor) {
-      console.error('No stored face descriptor found');
-      return false;
-    }
-
-    const isMatch = isFaceMatch(capturedDescriptor, userData.faceDescriptor);
-    setFaceVerified(isMatch);
-    return isMatch;
-  };
-
-  const createUserProfile = async (userId: string, data: Partial<User>) => {
-    const userRef = doc(db, 'users', userId);
-    await setDoc(userRef, {
-      ...data,
-      id: userId,
-      createdAt: Timestamp.now(),
-    });
-    
-    // Refresh user data
-    const userDoc = await getDoc(userRef);
-    if (userDoc.exists()) {
-      setUserData({ id: userDoc.id, ...userDoc.data() } as User);
-    }
+    await firebaseSignOut(auth);
+    setUserData(null);
+    setCurrentUser(null);
   };
 
   return (
-    <AuthContext.Provider
-      value={{
-        firebaseUser,
-        userData,
-        loading,
-        isFullyAuthenticated,
-        login,
-        signup,
-        logout,
-        verifyFace,
-        setFaceVerified,
-        createUserProfile,
-      }}
-    >
+    <AuthContext.Provider value={{
+      currentUser,
+      userData,
+      loading,
+      isFullyAuthenticated: !!userData, 
+      loginWithFace,
+      signup,
+      createUserProfile,
+      logout
+    }}>
       {children}
     </AuthContext.Provider>
   );
