@@ -13,6 +13,7 @@ import {
   User,
   LogOut,
   GraduationCap,
+  Target,
 } from 'lucide-react';
 import {
   Sidebar,
@@ -35,6 +36,7 @@ const menuItems = [
   { title: 'Attendance', icon: ClipboardList, path: '/attendance' },
   { title: 'Timetable', icon: Calendar, path: '/timetable' },
   { title: 'Assignments', icon: GraduationCap, path: '/assignments' },
+  { title: 'Focus Mode', icon: Target, path: '/focus-setup' }, // Points to TimeSelection
 ];
 
 const logisticsItems = [
@@ -76,7 +78,8 @@ export function AppSidebar() {
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton
                     asChild
-                    isActive={location.pathname === item.path}
+                    // Keeps the button highlighted whether they are on setup or the actual focus mode
+                    isActive={location.pathname === item.path || (item.title === 'Focus Mode' && location.pathname === '/focus-mode')}
                   >
                     <Link to={item.path}>
                       <item.icon className="h-4 w-4" />

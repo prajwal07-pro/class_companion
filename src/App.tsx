@@ -23,6 +23,10 @@ import Complaints from "@/pages/Complaints";
 import Profile from "@/pages/Profile";
 import NotFound from "@/pages/NotFound";
 
+// Focus Mode Pages
+import FocusMode from "@/pages/FocusMode";
+import TimeSelection from "@/pages/TimeSelection";
+
 const queryClient = new QueryClient();
 
 // Protected Route Component
@@ -72,6 +76,10 @@ const App = () => (
               <Route path="/chat" element={<Chat />} />
               <Route path="/complaints" element={<Complaints />} />
               <Route path="/profile" element={<Profile />} />
+              
+              {/* Focus Mode Setup & Dashboard */}
+              <Route path="/focus-setup" element={<TimeSelection />} />
+              <Route path="/focus-mode" element={<FocusMode />} />
             </Route>
 
             {/* Catch-all */}
